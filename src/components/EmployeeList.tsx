@@ -42,18 +42,31 @@ export const EmployeeList: React.FC<EmployeeListProps> = ({ employees, onReload 
   });
 
   // Start Camera for Face Enrollment
+  const enrollStreamRef = useRef<MediaStream | null>(null);
+
   const startEnrollCamera = async () => {
     setEnrollCameraError(null);
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Kamera tidak didukung pada browser ini.');
       }
+
+      if (enrollStreamRef.current) {
+        enrollStreamRef.current.getTracks().forEach((track) => track.stop());
+        enrollStreamRef.current = null;
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 480, facingMode: 'user' },
         audio: false,
       });
+
+      enrollStreamRef.current = stream;
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        videoRef.current.muted = true;
+        videoRef.current.setAttribute('playsinline', 'true');
         videoRef.current.play().catch(() => {});
       }
     } catch (e: any) {
@@ -69,10 +82,22 @@ export const EmployeeList: React.FC<EmployeeListProps> = ({ employees, onReload 
     }
   };
 
+  useEffect(() => {
+    if (showAddModal && enrollMode === 'camera' && enrollStreamRef.current && videoRef.current) {
+      const video = videoRef.current;
+      video.srcObject = enrollStreamRef.current;
+      video.muted = true;
+      video.setAttribute('playsinline', 'true');
+      video.play().catch(() => {});
+    }
+  }, [showAddModal, enrollMode]);
+
   const stopEnrollCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach((track) => track.stop());
+    if (enrollStreamRef.current) {
+      enrollStreamRef.current.getTracks().forEach((track) => track.stop());
+      enrollStreamRef.current = null;
+    }
+    if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
   };

@@ -49,6 +49,8 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
   const animationFrameRef = useRef<number | null>(null);
 
   // Initialize camera stream
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+
   const startCamera = async () => {
     setCameraError(null);
     setIsVirtualCamera(false);
@@ -57,37 +59,23 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
         throw new Error('Akses kamera tidak didukung di browser ini.');
       }
 
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+
       let stream: MediaStream;
       try {
-        // Try high quality first
         stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
           audio: false,
         });
       } catch (e) {
-        // Fallback to basic video constraint
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
       }
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.muted = true;
-        videoRef.current.playsInline = true;
-
-        const playPromise = videoRef.current.play();
-        if (playPromise !== undefined) {
-          playPromise
-            .then(() => {
-              setCameraActive(true);
-            })
-            .catch((err) => {
-              console.warn('Video play deferred or blocked:', err);
-              setCameraActive(true);
-            });
-        } else {
-          setCameraActive(true);
-        }
-      }
+      mediaStreamRef.current = stream;
+      setCameraActive(true);
     } catch (err: any) {
       console.error('Camera initialization error:', err);
       let msg = 'Gagal mengakses kamera.';
@@ -97,9 +85,9 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
         err.message?.includes('Permission denied')
       ) {
         msg =
-          'Akses kamera fisik diblokir oleh sistem Iframe browser. Anda dapat mengeklik "Buka di Tab Baru" untuk izin kamera fisik langsung, atau gunakan "Mode Kamera Virtual Live" di bawah untuk melihat tampilan live.';
+          'Akses kamera fisik diblokir oleh browser / iframe. Buka di Tab Baru atau gunakan Stream Virtual Live / Unggah Foto.';
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        msg = 'Kamera fisik tidak ditemukan. Mengalihkan ke Mode Kamera Virtual Live...';
+        msg = 'Kamera tidak ditemukan. Mengalihkan ke Stream Virtual Live atau Unggah Foto Wajah.';
       } else {
         msg = err.message || 'Gagal mengaktifkan kamera.';
       }
@@ -107,6 +95,21 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
       setCameraActive(false);
     }
   };
+
+  useEffect(() => {
+    if (cameraActive && !isVirtualCamera && mediaStreamRef.current && videoRef.current) {
+      const video = videoRef.current;
+      if (video.srcObject !== mediaStreamRef.current) {
+        video.srcObject = mediaStreamRef.current;
+      }
+      video.muted = true;
+      video.setAttribute('playsinline', 'true');
+      const playPromise = video.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => console.warn('Video play error:', err));
+      }
+    }
+  }, [cameraActive, isVirtualCamera]);
 
   // Start Virtual Animated Live Stream Canvas
   const startVirtualCameraStream = () => {
@@ -297,12 +300,15 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
   };
 
   const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach((track) => track.stop());
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+    if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
     setCameraActive(false);
+    setIsVirtualCamera(false);
   };
 
   useEffect(() => {
@@ -314,19 +320,27 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
 
   // Real-time scan loop
   const processFrame = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current || !cameraActive || scanning) return;
+    if (!cameraActive || scanning) return;
+    if (!canvasRef.current) return;
 
-    const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (video.readyState !== 4) return;
 
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
+    if (!isVirtualCamera) {
+      if (!videoRef.current) return;
+      const video = videoRef.current;
+      if (video.readyState < 2) return;
+
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    }
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     setScanning(true);
     try {
@@ -550,22 +564,27 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
 
           {/* Camera View Area */}
           <div className="relative bg-slate-950 rounded-2xl overflow-hidden aspect-video flex items-center justify-center border border-slate-800/80 shadow-inner">
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`w-full h-full object-cover transform scale-x-[-1] ${
+                cameraActive && !isVirtualCamera ? 'block' : 'hidden'
+              }`}
+            />
+            <canvas
+              ref={canvasRef}
+              className={`w-full h-full object-cover ${
+                cameraActive && isVirtualCamera
+                  ? 'block'
+                  : cameraActive && !isVirtualCamera
+                  ? 'absolute inset-0 transform scale-x-[-1] pointer-events-none'
+                  : 'hidden'
+              }`}
+            />
             {cameraActive ? (
               <>
-                {!isVirtualCamera && (
-                  <video
-                    ref={videoRef}
-                    className="w-full h-full object-cover transform scale-x-[-1]"
-                    playsInline
-                    muted
-                  />
-                )}
-                <canvas
-                  ref={canvasRef}
-                  className={`w-full h-full object-cover ${
-                    isVirtualCamera ? 'block' : 'absolute inset-0 transform scale-x-[-1] pointer-events-none'
-                  }`}
-                />
 
                 {/* Face Scanning Guide Frame */}
                 <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
