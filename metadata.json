@@ -1,0 +1,6 @@
+{
+  "name": "Presensi Wajah Karyawan",
+  "description": "Sistem presensi karyawan dengan pengenalan wajah streaming real-time, sinkronisasi backend SQLite, dan ekspor laporan bulanan Excel/PDF.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
