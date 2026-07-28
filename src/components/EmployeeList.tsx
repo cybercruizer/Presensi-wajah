@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Users, UserPlus, Search, Trash2, Camera, CheckCircle2, ShieldAlert, Sparkles, X, RefreshCw, Upload, AlertCircle } from 'lucide-react';
 import { Employee } from '../types';
 import { extractFaceDescriptorFromCanvas } from '../lib/faceEngine';

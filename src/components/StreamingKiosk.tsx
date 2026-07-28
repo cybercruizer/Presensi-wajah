@@ -47,6 +47,7 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
 
   const [isVirtualCamera, setIsVirtualCamera] = useState(false);
   const animationFrameRef = useRef<number | null>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Initialize camera stream
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -323,49 +324,63 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
     if (!cameraActive || scanning) return;
     if (!canvasRef.current) return;
 
-    const canvas = canvasRef.current;
+    const overlayCanvas = canvasRef.current;
+    let targetAnalysisCanvas: HTMLCanvasElement = overlayCanvas;
 
     if (!isVirtualCamera) {
       if (!videoRef.current) return;
       const video = videoRef.current;
       if (video.readyState < 2) return;
 
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
+      if (!offscreenCanvasRef.current) {
+        offscreenCanvasRef.current = document.createElement('canvas');
+      }
+      const offscreen = offscreenCanvasRef.current;
+      offscreen.width = video.videoWidth || 640;
+      offscreen.height = video.videoHeight || 480;
 
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+      const offCtx = offscreen.getContext('2d');
+      if (!offCtx) return;
 
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+      targetAnalysisCanvas = offscreen;
+
+      // Clear the overlay canvas so live video plays smoothly underneath
+      overlayCanvas.width = offscreen.width;
+      overlayCanvas.height = offscreen.height;
+      const overlayCtx = overlayCanvas.getContext('2d');
+      if (overlayCtx) {
+        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      }
     }
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
 
     setScanning(true);
     try {
-      const result = await extractFaceDescriptorFromCanvas(canvas);
+      const result = await extractFaceDescriptorFromCanvas(targetAnalysisCanvas);
 
       if (result && result.descriptor) {
-        // Draw face bounding box on canvas
-        const box = result.box;
-        ctx.strokeStyle = '#10b981'; // Emerald 500
-        ctx.lineWidth = 3;
-        ctx.strokeRect(box.x, box.y, box.width, box.height);
+        // Draw face bounding box on overlay canvas
+        const overlayCtx = overlayCanvas.getContext('2d');
+        if (overlayCtx) {
+          const box = result.box;
+          overlayCtx.strokeStyle = '#10b981'; // Emerald 500
+          overlayCtx.lineWidth = 3;
+          overlayCtx.strokeRect(box.x, box.y, box.width, box.height);
 
-        // Corner accents
-        const cornerLen = 15;
-        ctx.strokeStyle = '#34d399';
-        ctx.beginPath();
-        // Top Left
-        ctx.moveTo(box.x, box.y + cornerLen);
-        ctx.lineTo(box.x, box.y);
-        ctx.lineTo(box.x + cornerLen, box.y);
-        // Top Right
-        ctx.moveTo(box.x + box.width - cornerLen, box.y);
-        ctx.lineTo(box.x + box.width, box.y);
-        ctx.lineTo(box.x + box.width, box.y + cornerLen);
-        ctx.stroke();
+          // Corner accents
+          const cornerLen = 15;
+          overlayCtx.strokeStyle = '#34d399';
+          overlayCtx.beginPath();
+          // Top Left
+          overlayCtx.moveTo(box.x, box.y + cornerLen);
+          overlayCtx.lineTo(box.x, box.y);
+          overlayCtx.lineTo(box.x + cornerLen, box.y);
+          // Top Right
+          overlayCtx.moveTo(box.x + box.width - cornerLen, box.y);
+          overlayCtx.lineTo(box.x + box.width, box.y);
+          overlayCtx.lineTo(box.x + box.width, box.y + cornerLen);
+          overlayCtx.stroke();
+        }
 
         // Perform face matching against database
         const matchRes = matchFace(result.descriptor, employees, settings.minMatchConfidence);
@@ -386,7 +401,7 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
             lastScanMap.current[matchedEmp.id] = now;
 
             // Capture frame as photo proof
-            const photoProof = canvas.toDataURL('image/jpeg', 0.8);
+            const photoProof = targetAnalysisCanvas.toDataURL('image/jpeg', 0.8);
 
             // Execute check-in/out to backend SQLite
             const response = await fetch('/api/attendance/checkin', {
@@ -437,7 +452,7 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
     } finally {
       setScanning(false);
     }
-  }, [cameraActive, scanning, employees, settings.minMatchConfidence, soundEnabled, onAttendanceSuccess]);
+  }, [cameraActive, scanning, isVirtualCamera, employees, settings.minMatchConfidence, soundEnabled, onAttendanceSuccess]);
 
   useEffect(() => {
     if (!cameraActive) return;
