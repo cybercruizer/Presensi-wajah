@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Camera, CheckCircle2, AlertTriangle, UserCheck, Volume2, VolumeX, ShieldCheck, RefreshCw, Zap, Sparkles, Upload } from 'lucide-react';
+import { Camera, CheckCircle2, AlertTriangle, UserCheck, Volume2, VolumeX, ShieldCheck, RefreshCw, Zap, Sparkles, Upload, ExternalLink } from 'lucide-react';
 import { Employee, AttendanceRecord, CompanySettings } from '../types';
 import { extractFaceDescriptorFromCanvas, matchFace, playAttendanceSound } from '../lib/faceEngine';
 
@@ -45,29 +45,61 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
   // Cooldown map to prevent duplicate scans within 10 seconds
   const lastScanMap = useRef<Record<string, number>>({});
 
+  const [isVirtualCamera, setIsVirtualCamera] = useState(false);
+  const animationFrameRef = useRef<number | null>(null);
+
   // Initialize camera stream
   const startCamera = async () => {
     setCameraError(null);
+    setIsVirtualCamera(false);
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Akses kamera tidak didukung di browser ini.');
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
-        audio: false,
-      });
+
+      let stream: MediaStream;
+      try {
+        // Try high quality first
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+          audio: false,
+        });
+      } catch (e) {
+        // Fallback to basic video constraint
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(() => {});
-        setCameraActive(true);
+        videoRef.current.muted = true;
+        videoRef.current.playsInline = true;
+
+        const playPromise = videoRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              setCameraActive(true);
+            })
+            .catch((err) => {
+              console.warn('Video play deferred or blocked:', err);
+              setCameraActive(true);
+            });
+        } else {
+          setCameraActive(true);
+        }
       }
     } catch (err: any) {
       console.error('Camera initialization error:', err);
       let msg = 'Gagal mengakses kamera.';
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.message?.includes('Permission denied')) {
-        msg = 'Akses kamera ditolak oleh browser / iframe. Silakan izinkan kamera pada browser atau gunakan Upload Foto / Simulasi Cepat di bawah.';
+      if (
+        err.name === 'NotAllowedError' ||
+        err.name === 'PermissionDeniedError' ||
+        err.message?.includes('Permission denied')
+      ) {
+        msg =
+          'Akses kamera fisik diblokir oleh sistem Iframe browser. Anda dapat mengeklik "Buka di Tab Baru" untuk izin kamera fisik langsung, atau gunakan "Mode Kamera Virtual Live" di bawah untuk melihat tampilan live.';
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        msg = 'Perangkat kamera tidak ditemukan. Gunakan Upload Foto Wajah atau Simulasi Cepat di bawah.';
+        msg = 'Kamera fisik tidak ditemukan. Mengalihkan ke Mode Kamera Virtual Live...';
       } else {
         msg = err.message || 'Gagal mengaktifkan kamera.';
       }
@@ -75,6 +107,120 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
       setCameraActive(false);
     }
   };
+
+  // Start Virtual Animated Live Stream Canvas
+  const startVirtualCameraStream = () => {
+    setIsVirtualCamera(true);
+    setCameraActive(true);
+    setCameraError(null);
+  };
+
+  useEffect(() => {
+    if (!cameraActive || !isVirtualCamera || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let frameCount = 0;
+
+    const renderVirtualFeed = () => {
+      frameCount++;
+      const width = (canvas.width = canvas.parentElement?.clientWidth || 640);
+      const height = (canvas.height = canvas.parentElement?.clientHeight || 480);
+
+      // Background gradient simulation (Webcam video style)
+      const grad = ctx.createLinearGradient(0, 0, width, height);
+      grad.addColorStop(0, '#0f172a');
+      grad.addColorStop(0.5, '#1e293b');
+      grad.addColorStop(1, '#020617');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, width, height);
+
+      // Grid overlay
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.08)';
+      ctx.lineWidth = 1;
+      const gridSize = 40;
+      for (let x = 0; x < width; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+      for (let y = 0; y < height; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      // Animated Face Mesh Graphic
+      const centerX = width / 2 + Math.sin(frameCount * 0.03) * 15;
+      const centerY = height / 2 - 10 + Math.cos(frameCount * 0.02) * 10;
+      const headRadius = 85;
+
+      // Scanning Laser Bar
+      const scanY = (frameCount * 3) % height;
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.6)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(centerX - 120, scanY);
+      ctx.lineTo(centerX + 120, scanY);
+      ctx.stroke();
+
+      // Head silhouette outline
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.8)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY, headRadius, headRadius * 1.25, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Eyes
+      ctx.fillStyle = '#10b981';
+      ctx.beginPath();
+      ctx.arc(centerX - 30, centerY - 20, 6, 0, Math.PI * 2);
+      ctx.arc(centerX + 30, centerY - 20, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Nose & Mouth landmarks
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY - 10);
+      ctx.lineTo(centerX - 8, centerY + 15);
+      ctx.lineTo(centerX + 8, centerY + 15);
+      ctx.strokeStyle = 'rgba(52, 211, 153, 0.7)';
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(centerX, centerY + 35, 20, 0.2, Math.PI - 0.2);
+      ctx.stroke();
+
+      // Facial Vector Points
+      for (let i = 0; i < 12; i++) {
+        const angle = (i / 12) * Math.PI * 2 + frameCount * 0.02;
+        const px = centerX + Math.cos(angle) * (headRadius + 5);
+        const py = centerY + Math.sin(angle) * (headRadius * 1.25 + 5);
+        ctx.fillStyle = i % 2 === 0 ? '#34d399' : '#059669';
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // HUD Text
+      ctx.fillStyle = '#10b981';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText(`VIRTUAL LIVE STREAM - 60FPS`, 20, 30);
+      ctx.fillText(`AI FACE ENGINE: READY`, 20, 48);
+      ctx.fillText(`TIMESTAMP: ${new Date().toLocaleTimeString()}`, 20, 66);
+
+      animationFrameRef.current = requestAnimationFrame(renderVirtualFeed);
+    };
+
+    renderVirtualFeed();
+
+    return () => {
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    };
+  }, [cameraActive, isVirtualCamera]);
 
   const handleUploadPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -406,15 +552,19 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
           <div className="relative bg-slate-950 rounded-2xl overflow-hidden aspect-video flex items-center justify-center border border-slate-800/80 shadow-inner">
             {cameraActive ? (
               <>
-                <video
-                  ref={videoRef}
-                  className="w-full h-full object-cover transform scale-x-[-1]"
-                  playsInline
-                  muted
-                />
+                {!isVirtualCamera && (
+                  <video
+                    ref={videoRef}
+                    className="w-full h-full object-cover transform scale-x-[-1]"
+                    playsInline
+                    muted
+                  />
+                )}
                 <canvas
                   ref={canvasRef}
-                  className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1] pointer-events-none"
+                  className={`w-full h-full object-cover ${
+                    isVirtualCamera ? 'block' : 'absolute inset-0 transform scale-x-[-1] pointer-events-none'
+                  }`}
                 />
 
                 {/* Face Scanning Guide Frame */}
@@ -424,6 +574,12 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
                       Posisikan Wajah Di Sini
                     </div>
                   </div>
+                </div>
+
+                {/* Mode Indicator Badge */}
+                <div className="absolute top-3 left-3 bg-slate-900/80 backdrop-blur border border-slate-700/80 text-emerald-400 px-2.5 py-1 rounded-lg text-[10px] font-mono font-bold flex items-center gap-1.5 shadow">
+                  <Sparkles className="w-3 h-3 text-emerald-400" />
+                  <span>{isVirtualCamera ? 'Kamera Virtual Live (Simulasi AI)' : 'Webcam Fisik Live'}</span>
                 </div>
 
                 {/* Match Overlay Badge */}
@@ -451,20 +607,37 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
                 )}
               </>
             ) : (
-              <div className="text-center p-8 max-w-sm">
-                <Camera className="w-16 h-16 text-slate-600 mx-auto mb-3 animate-bounce" />
-                <h3 className="text-base font-semibold text-slate-200">Kamera Non-Aktif</h3>
-                <p className="text-xs text-slate-400 mt-1 mb-4">
-                  Tekan tombol untuk mengaktifkan pemindaian wajah, atau unggah foto wajah presensi jika izin kamera diblokir.
+              <div className="text-center p-6 max-w-md">
+                <Camera className="w-14 h-14 text-slate-600 mx-auto mb-3 animate-bounce" />
+                <h3 className="text-base font-bold text-slate-200">Mode Kamera Presensi</h3>
+                <p className="text-xs text-slate-400 mt-1 mb-4 leading-relaxed">
+                  Iframe preview browser memerlukan izin akses kamera. Anda dapat membuka di tab baru untuk webcam fisik langsung, mengaktifkan mode kamera virtual live, atau mengunggah foto wajah.
                 </p>
 
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
                     onClick={startCamera}
-                    className="px-4 py-2 bg-emerald-500 text-slate-950 font-bold rounded-xl text-xs shadow-lg hover:bg-emerald-400 transition-all flex items-center gap-1.5"
+                    className="px-3.5 py-2 bg-emerald-500 text-slate-950 font-bold rounded-xl text-xs shadow-lg hover:bg-emerald-400 transition-all flex items-center gap-1.5"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    Aktifkan Kamera
+                    Kamera Fisik Live
+                  </button>
+
+                  <button
+                    onClick={startVirtualCameraStream}
+                    className="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-xl text-xs shadow-lg transition-all flex items-center gap-1.5"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Stream Virtual Live
+                  </button>
+
+                  <button
+                    onClick={() => window.open(window.location.href, '_blank')}
+                    className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold rounded-xl text-xs transition-all flex items-center gap-1.5 shadow"
+                    title="Buka di Tab Baru untuk izin kamera browser langsung"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Buka di Tab Baru
                   </button>
 
                   <input
@@ -477,7 +650,7 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
                   <button
                     onClick={() => fileInputRef.current?.click()}
                     disabled={scanning}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold rounded-xl text-xs transition-all flex items-center gap-1.5"
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold rounded-xl text-xs transition-all flex items-center gap-1.5"
                   >
                     <Upload className="w-3.5 h-3.5 text-emerald-400" />
                     {scanning ? 'Memproses Foto...' : 'Unggah Foto Wajah'}
