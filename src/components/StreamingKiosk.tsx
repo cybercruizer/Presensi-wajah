@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Camera, CheckCircle2, AlertTriangle, UserCheck, Volume2, VolumeX, ShieldCheck, RefreshCw, Zap, Sparkles } from 'lucide-react';
+import { Camera, CheckCircle2, AlertTriangle, UserCheck, Volume2, VolumeX, ShieldCheck, RefreshCw, Zap, Sparkles, Upload } from 'lucide-react';
 import { Employee, AttendanceRecord, CompanySettings } from '../types';
 import { extractFaceDescriptorFromCanvas, matchFace, playAttendanceSound } from '../lib/faceEngine';
 
@@ -18,6 +18,7 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -48,20 +49,105 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
   const startCamera = async () => {
     setCameraError(null);
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Akses kamera tidak didukung di browser ini.');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
         audio: false,
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        videoRef.current.play().catch(() => {});
         setCameraActive(true);
       }
     } catch (err: any) {
       console.error('Camera initialization error:', err);
-      setCameraError('Gagal mengakses kamera. Pastikan izin kamera telah diberikan di browser.');
+      let msg = 'Gagal mengakses kamera.';
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError' || err.message?.includes('Permission denied')) {
+        msg = 'Akses kamera ditolak oleh browser / iframe. Silakan izinkan kamera pada browser atau gunakan Upload Foto / Simulasi Cepat di bawah.';
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        msg = 'Perangkat kamera tidak ditemukan. Gunakan Upload Foto Wajah atau Simulasi Cepat di bawah.';
+      } else {
+        msg = err.message || 'Gagal mengaktifkan kamera.';
+      }
+      setCameraError(msg);
       setCameraActive(false);
     }
+  };
+
+  const handleUploadPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const imgUrl = event.target?.result as string;
+      if (!imgUrl) return;
+
+      const img = new Image();
+      img.onload = async () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width || 640;
+        canvas.height = img.height || 480;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+        setScanning(true);
+        try {
+          const result = await extractFaceDescriptorFromCanvas(canvas);
+          if (result && result.descriptor) {
+            const matchRes = matchFace(result.descriptor, employees, settings.minMatchConfidence);
+            if (matchRes.matchedEmployee) {
+              const matchedEmp = matchRes.matchedEmployee;
+              const photoProof = canvas.toDataURL('image/jpeg', 0.85);
+
+              const response = await fetch('/api/attendance/checkin', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  employeeId: matchedEmp.id,
+                  photoProof,
+                  location: 'Unggah Foto Wajah',
+                  matchScore: matchRes.confidence / 100,
+                }),
+              });
+
+              if (response.ok) {
+                const resData = await response.json();
+                if (soundEnabled) playAttendanceSound('SUCCESS');
+
+                setLastNotification({
+                  type: resData.type,
+                  title: resData.type === 'CHECK_IN' ? 'PRESENSI MASUK BERHASIL' : 'PRESENSI PULANG BERHASIL',
+                  message: resData.message,
+                  employeeName: matchedEmp.name,
+                  nip: matchedEmp.nip,
+                  department: matchedEmp.department,
+                  time: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+                  photoProof,
+                });
+
+                onAttendanceSuccess();
+                setTimeout(() => setLastNotification(null), 6000);
+              }
+            } else {
+              alert('Wajah pada foto tidak cocok dengan data karyawan terdaftar (Confidence < ' + (settings.minMatchConfidence * 100) + '%).');
+            }
+          } else {
+            alert('Wajah tidak terdeteksi pada foto yang diunggah. Silakan gunakan foto wajah yang jelas.');
+          }
+        } catch (err) {
+          console.error(err);
+        } finally {
+          setScanning(false);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        }
+      };
+      img.src = imgUrl;
+    };
+    reader.readAsDataURL(file);
   };
 
   const stopCamera = () => {
@@ -366,17 +452,37 @@ export const StreamingKiosk: React.FC<StreamingKioskProps> = ({
               </>
             ) : (
               <div className="text-center p-8 max-w-sm">
-                <Camera className="w-16 h-16 text-slate-600 mx-auto mb-4 animate-bounce" />
+                <Camera className="w-16 h-16 text-slate-600 mx-auto mb-3 animate-bounce" />
                 <h3 className="text-base font-semibold text-slate-200">Kamera Non-Aktif</h3>
                 <p className="text-xs text-slate-400 mt-1 mb-4">
-                  Tekan tombol di bawah untuk mengaktifkan pemindaian wajah real-time.
+                  Tekan tombol untuk mengaktifkan pemindaian wajah, atau unggah foto wajah presensi jika izin kamera diblokir.
                 </p>
-                <button
-                  onClick={startCamera}
-                  className="px-5 py-2.5 bg-emerald-500 text-slate-950 font-bold rounded-xl text-xs shadow-lg hover:bg-emerald-400 transition-all"
-                >
-                  Aktifkan Kamera Sekarang
-                </button>
+
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <button
+                    onClick={startCamera}
+                    className="px-4 py-2 bg-emerald-500 text-slate-950 font-bold rounded-xl text-xs shadow-lg hover:bg-emerald-400 transition-all flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Aktifkan Kamera
+                  </button>
+
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    accept="image/*"
+                    onChange={handleUploadPhoto}
+                    className="hidden"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={scanning}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 font-semibold rounded-xl text-xs transition-all flex items-center gap-1.5"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-emerald-400" />
+                    {scanning ? 'Memproses Foto...' : 'Unggah Foto Wajah'}
+                  </button>
+                </div>
               </div>
             )}
 

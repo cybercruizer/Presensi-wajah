@@ -1,3 +1,11 @@
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'staff' | string;
+  createdAt: string;
+}
+
 export interface Employee {
   id: string;
   nip: string;

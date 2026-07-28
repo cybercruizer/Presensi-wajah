@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import initSqlJs, { Database } from 'sql.js';
 
@@ -14,6 +15,21 @@ const DATA_DIR = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'attendance.db');
 
 let db: Database;
+
+// Password Hashing Helpers (Crypto PBKDF2)
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password: string, combined: string): boolean {
+  if (!combined || !combined.includes(':')) return false;
+  const [salt, originalHash] = combined.split(':');
+  if (!salt || !originalHash) return false;
+  const hash = crypto.pbkdf2Sync(password, salt, 1000, 64, 'sha512').toString('hex');
+  return hash === originalHash;
+}
 
 // Helper to save SQLite database bytes to disk
 function saveDatabase() {
@@ -48,6 +64,15 @@ async function initDB() {
 
   // Schema creation
   db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE,
+      password_hash TEXT,
+      name TEXT,
+      role TEXT DEFAULT 'admin',
+      created_at TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS employees (
       id TEXT PRIMARY KEY,
       nip TEXT UNIQUE,
@@ -81,6 +106,22 @@ async function initDB() {
       value TEXT
     );
   `);
+
+  // Seed default admin user if empty
+  const userRes = db.exec(`SELECT COUNT(*) as cnt FROM users`);
+  if (!userRes[0] || userRes[0].values[0][0] === 0) {
+    const adminId = 'usr-admin-default';
+    const adminEmail = 'admin@company.com';
+    const adminPass = hashPassword('admin123');
+    const adminName = 'Administrator System';
+    const nowIso = new Date().toISOString();
+
+    db.run(
+      `INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [adminId, adminEmail, adminPass, adminName, 'admin', nowIso]
+    );
+    console.log('Default admin user seeded: admin@company.com / admin123');
+  }
 
   // Initial settings default
   const settingsRes = db.exec(`SELECT COUNT(*) as cnt FROM settings`);
@@ -231,6 +272,172 @@ function seedInitialData() {
 }
 
 // REST API Endpoints
+
+// Authentication Endpoints
+
+// Register User
+app.post('/api/auth/register', (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ error: 'Nama, email, dan kata sandi wajib diisi.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Kata sandi minimal 6 karakter.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Check if email already exists
+    const existingUser = db.exec(`SELECT id FROM users WHERE LOWER(email) = ?`, [cleanEmail]);
+    if (existingUser[0] && existingUser[0].values.length > 0) {
+      return res.status(400).json({ error: 'Email ini sudah terdaftar dalam sistem.' });
+    }
+
+    const userId = `usr-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const passwordHash = hashPassword(password);
+    const userRole = role || 'admin';
+    const createdAt = new Date().toISOString();
+
+    db.run(
+      `INSERT INTO users (id, email, password_hash, name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      [userId, cleanEmail, passwordHash, name.trim(), userRole, createdAt]
+    );
+
+    saveDatabase();
+
+    const userObj = {
+      id: userId,
+      email: cleanEmail,
+      name: name.trim(),
+      role: userRole,
+      createdAt
+    };
+
+    res.json({
+      success: true,
+      message: 'Pendaftaran akun berhasil!',
+      user: userObj,
+      token: userId
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Login User
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email dan kata sandi wajib diisi.' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const result = db.exec(`SELECT id, email, password_hash, name, role, created_at FROM users WHERE LOWER(email) = ?`, [cleanEmail]);
+
+    if (!result[0] || result[0].values.length === 0) {
+      return res.status(401).json({ error: 'Email atau kata sandi tidak ditemukan.' });
+    }
+
+    const row = result[0].values[0];
+    const user = {
+      id: row[0] as string,
+      email: row[1] as string,
+      passwordHash: row[2] as string,
+      name: row[3] as string,
+      role: row[4] as string,
+      createdAt: row[5] as string
+    };
+
+    const isValid = verifyPassword(password, user.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Kata sandi yang Anda masukkan salah.' });
+    }
+
+    const userClean = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      createdAt: user.createdAt
+    };
+
+    res.json({
+      success: true,
+      message: `Selamat datang kembali, ${user.name}!`,
+      user: userClean,
+      token: user.id
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Current Logged-in User
+app.get('/api/auth/me', (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const userIdQuery = req.query.userId as string;
+    let userId = userIdQuery;
+
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      userId = authHeader.substring(7);
+    }
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Tidak ada otentikasi.' });
+    }
+
+    const result = db.exec(`SELECT id, email, name, role, created_at FROM users WHERE id = ?`, [userId]);
+    if (!result[0] || result[0].values.length === 0) {
+      return res.status(404).json({ error: 'Sesi pengguna tidak valid.' });
+    }
+
+    const row = result[0].values[0];
+    res.json({
+      user: {
+        id: row[0] as string,
+        email: row[1] as string,
+        name: row[2] as string,
+        role: row[3] as string,
+        createdAt: row[4] as string
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Logout User
+app.post('/api/auth/logout', (req, res) => {
+  res.json({ success: true, message: 'Sesi telah ditutup.' });
+});
+
+// Get List of Registered Users (Admin interface)
+app.get('/api/auth/users', (req, res) => {
+  try {
+    const result = db.exec(`SELECT id, email, name, role, created_at FROM users ORDER BY created_at DESC`);
+    const users = [];
+    if (result[0]) {
+      for (const row of result[0].values) {
+        users.push({
+          id: row[0] as string,
+          email: row[1] as string,
+          name: row[2] as string,
+          role: row[3] as string,
+          createdAt: row[4] as string
+        });
+      }
+    }
+    res.json(users);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Get company settings
 app.get('/api/settings', (req, res) => {

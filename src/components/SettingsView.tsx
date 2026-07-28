@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, Database, Download, Save, CheckCircle2, ShieldCheck, Server, HardDrive } from 'lucide-react';
-import { CompanySettings } from '../types';
+import { Settings, Database, Download, Save, CheckCircle2, ShieldCheck, Server, UserCheck, Shield, Users } from 'lucide-react';
+import { CompanySettings, User } from '../types';
 
 interface SettingsViewProps {
   settings: CompanySettings;
@@ -21,6 +21,7 @@ interface DBStatus {
 export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSettings }) => {
   const [formData, setFormData] = useState<CompanySettings>(settings);
   const [dbStatus, setDbStatus] = useState<DBStatus | null>(null);
+  const [registeredUsers, setRegisteredUsers] = useState<User[]>([]);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const fetchDbStatus = async () => {
@@ -35,9 +36,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
     }
   };
 
+  const fetchUsers = async () => {
+    try {
+      const res = await fetch('/api/auth/users');
+      if (res.ok) {
+        const data = await res.json();
+        setRegisteredUsers(data);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     setFormData(settings);
     fetchDbStatus();
+    fetchUsers();
   }, [settings]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -235,6 +249,35 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onUpdateSe
             ) : (
               <p className="text-xs text-slate-500">Memuat status database...</p>
             )}
+          </div>
+
+          <div className="pt-6 border-t border-slate-800/80 mt-4">
+            <h4 className="text-sm font-bold text-white mb-3 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-emerald-400" />
+                Pengguna Terdaftar SQLite
+              </span>
+              <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full font-mono">
+                {registeredUsers.length} Akun
+              </span>
+            </h4>
+
+            <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+              {registeredUsers.map((usr) => (
+                <div
+                  key={usr.id}
+                  className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between text-xs"
+                >
+                  <div className="min-w-0 pr-2">
+                    <p className="font-bold text-slate-200 truncate">{usr.name}</p>
+                    <p className="text-[10px] text-slate-400 truncate">{usr.email}</p>
+                  </div>
+                  <span className="shrink-0 px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold rounded-md capitalize">
+                    {usr.role}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="pt-6">
